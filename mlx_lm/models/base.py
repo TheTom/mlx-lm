@@ -116,6 +116,9 @@ def scaled_dot_product_attention(
 ) -> mx.array:
     # TurboQuant KV cache: asymmetric fused attention path
     # K stays FP16 (passed as keys), V is packed turbo4 (on cache object)
+    # Uses fused Metal kernel for weighted V sum — no V decode overhead.
+    # Requires boundary layer protection (first/last 2 layers at FP16)
+    # to avoid NaN from extreme V norms on boundary layers.
     if hasattr(cache, "_is_turbo_kv") and cache._is_turbo_kv:
         if (
             cache._is_compressed
@@ -123,8 +126,7 @@ def scaled_dot_product_attention(
             and not cache.compress_keys
             and cache._packed_values is not None
             and cache.v_bits == 4
-            and queries.shape[2] <= 2
-            and mask is None
+            and queries.shape[2] == 1  # decode only (T_q=1)
         ):
             try:
                 from mlx.nn.layers.turbo_kv_cache import turbo_asymmetric_attention

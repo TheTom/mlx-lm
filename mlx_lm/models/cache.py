@@ -40,6 +40,64 @@ def make_prompt_cache(
         return [KVCache() for _ in range(num_layers)]
 
 
+def make_turbo_cache(
+    model: nn.Module,
+    bits: int = 4,
+    key_bits: int = 0,
+    boundary: int = 2,
+    min_compress_tokens: int = 256,
+) -> List[Any]:
+    """
+    Construct a TurboQuant KV cache for use in generation.
+
+    Uses asymmetric compression by default: K stays at FP16 (key_bits=0),
+    V compressed to ``bits``-bit TurboQuant. First and last ``boundary``
+    attention layers stay at FP16 for numerical stability (extreme V norms
+    on boundary layers can cause NaN in the fused Metal kernel).
+
+    Requires ``mlx.nn.layers.turbo_kv_cache`` (from TheTom/mlx fork).
+
+    Args:
+        model (nn.Module): The language model.
+        bits (int): V quantization bit-width (2, 3, or 4). Default: 4.
+        key_bits (int): K quantization bit-width. 0 = FP16 (recommended). Default: 0.
+        boundary (int): Number of first/last attention layers to keep at FP16. Default: 2.
+        min_compress_tokens (int): Minimum cache size before compression kicks in. Default: 256.
+
+    Returns:
+        List of cache objects — TurboKVCache for middle layers, KVCache for boundary layers.
+
+    Example::
+
+        cache = make_turbo_cache(model, bits=4)
+        response = mlx_lm.generate(model, tokenizer, prompt="Hello", prompt_cache=cache)
+    """
+    try:
+        from mlx.nn.layers.turbo_kv_cache import TurboKVCache
+    except ImportError:
+        raise ImportError(
+            "TurboKVCache requires the TheTom/mlx fork. "
+            "Install with: pip install git+https://github.com/TheTom/mlx.git@feature/turboquant-plus"
+        )
+
+    base_cache = make_prompt_cache(model)
+
+    # Identify KV attention layers (skip non-KVCache layers like ArraysCache)
+    kv_indices = [i for i, c in enumerate(base_cache) if isinstance(c, KVCache)]
+    n_kv = len(kv_indices)
+
+    for rank, idx in enumerate(kv_indices):
+        if rank < boundary or rank >= n_kv - boundary:
+            continue  # Keep boundary layers at FP16
+        base_cache[idx] = TurboKVCache(
+            bits=bits,
+            key_bits=key_bits,
+            min_compress_tokens=min_compress_tokens,
+        )
+
+    return base_cache
+
+
 def save_prompt_cache(file_name: str, cache: List[Any], metadata: Dict[str, str] = {}):
     """
     Save a pre-computed prompt cache to a file.
