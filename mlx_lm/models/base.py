@@ -114,6 +114,27 @@ def scaled_dot_product_attention(
     mask: Optional[mx.array],
     sinks: Optional[mx.array] = None,
 ) -> mx.array:
+    # TurboQuant KV cache: asymmetric fused attention path
+    # K stays FP16 (passed as keys), V is packed turbo4 (on cache object)
+    if hasattr(cache, "_is_turbo_kv") and cache._is_turbo_kv:
+        if (
+            cache._is_compressed
+            and cache.compress_values
+            and not cache.compress_keys
+            and cache._packed_values is not None
+            and cache.v_bits == 4
+            and queries.shape[2] <= 2
+            and mask is None
+        ):
+            try:
+                from mlx.nn.layers.turbo_kv_cache import turbo_asymmetric_attention
+                return turbo_asymmetric_attention(
+                    queries, keys, cache._packed_values, cache._value_norms,
+                    dim=cache._dim, scale=scale, seed=cache.seed,
+                )
+            except (ImportError, Exception):
+                pass  # Fall through to standard SDPA
+
     if hasattr(cache, "bits"):
         if sinks is not None:
             raise ValueError("Quantized SDPA does not support attention sinks.")
