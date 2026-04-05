@@ -46,6 +46,7 @@ def make_turbo_cache(
     key_bits: int = 0,
     boundary: int = 2,
     min_compress_tokens: int = 256,
+    k_compress_threshold: int = 0,
 ) -> List[Any]:
     """
     Construct a TurboQuant KV cache for use in generation.
@@ -63,6 +64,10 @@ def make_turbo_cache(
         key_bits (int): K quantization bit-width. 0 = FP16 (recommended). Default: 0.
         boundary (int): Number of first/last attention layers to keep at FP16. Default: 2.
         min_compress_tokens (int): Minimum cache size before compression kicks in. Default: 256.
+        k_compress_threshold (int): Context length at which K switches from FP16 to
+            turbo4. 0 = never (pure asymmetric). When > 0, K stays FP16 for quality
+            at short context, then gets batch-compressed for bandwidth at long context.
+            Only applies when key_bits=0 (asymmetric mode). Default: 0.
 
     Returns:
         List of cache objects — TurboKVCache for middle layers, KVCache for boundary layers.
@@ -71,6 +76,9 @@ def make_turbo_cache(
 
         cache = make_turbo_cache(model, bits=4)
         response = mlx_lm.generate(model, tokenizer, prompt="Hello", prompt_cache=cache)
+
+        # Adaptive K: FP16 K until 16K context, then compress K too
+        cache = make_turbo_cache(model, bits=4, k_compress_threshold=16384)
     """
     try:
         from mlx.nn.layers.turbo_kv_cache import TurboKVCache
@@ -93,6 +101,7 @@ def make_turbo_cache(
             bits=bits,
             key_bits=key_bits,
             min_compress_tokens=min_compress_tokens,
+            k_compress_threshold=k_compress_threshold,
         )
 
     return base_cache
