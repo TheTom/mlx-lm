@@ -372,8 +372,22 @@ class Model(nn.Module):
     @staticmethod
     def _dequant_fp8(weight, scale_inv):
         weight = mx.from_fp8(weight, dtype=mx.bfloat16)
-        bs = 128
         m, n = weight.shape
+        # MXFP8 microscaling (e.g. MiniMaxAI/MiniMax-M3-MXFP8): scale_inv is a
+        # U8 E8M0 exponent per [block_r, block_c] tile (weight_block_size
+        # [1,32] here), value v -> 2^(v-127). The DeepSeek-style 128x128
+        # float-scale path below is wrong for this layout.
+        if scale_inv.dtype == mx.uint8:
+            scale = mx.power(
+                mx.array(2.0, mx.float32),
+                (scale_inv.astype(mx.int32) - 127).astype(mx.float32),
+            )
+            br = m // scale_inv.shape[0]
+            bc = n // scale_inv.shape[1]
+            scale = mx.repeat(mx.repeat(scale, br, axis=0), bc, axis=1)[:m, :n]
+            return (weight.astype(mx.float32) * scale).astype(mx.bfloat16)
+        # DeepSeek-style 128x128 float block scales.
+        bs = 128
         pad_b = (-m) % bs
         pad_s = (-n) % bs
         weight = mx.pad(weight, ((0, pad_b), (0, pad_s)))
